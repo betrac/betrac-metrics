@@ -42,16 +42,18 @@ uv run btc-eval evaluate \
 
 ```
 BeTraC 2026 Evaluation Results
-==================================================
+======================================================================
 Team: my-team-name
 Split: validation
 Dialogs: 400
 Matcher: open-medical
 
-  Concept F1:  0.6904 [0.6512, 0.7296]  (P=0.7211, R=0.6623)
-  ROUGE-2 F1:  0.1872 [0.1654, 0.2090]  (P=0.2542, R=0.1493)
-  ROUGE-3 F1:  0.0482 [0.0371, 0.0593]  (P=0.0627, R=0.0390)
-==================================================
+  Concept F1:  0.2604 [0.2544, 0.2662]  (P=0.2891, R=0.2450)
+  ROUGE-2 F1:  0.0920 [0.0883, 0.0957]  (P=0.0852, R=0.1053)
+  ROUGE-3 F1:  0.0344 [0.0322, 0.0368]  (P=0.0319, R=0.0393)
+
+  Avg prediction length: 380.2 words, 2141.3 non-whitespace chars
+======================================================================
 ```
 
 The `[lo, hi]` brackets are 95% bootstrap confidence intervals (shown with `--bootstrap-ci`).
