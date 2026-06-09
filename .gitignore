@@ -19,3 +19,15 @@ uv.lock
 
 # Claude Code
 .claude/
+
+# macOS
+.DS_Store
+
+# Local scratch / run artifacts (not part of the package)
+results/
+results.zip
+results.tar.gz
+summaries.jsonl
+id_mapping.csv
+tmp.txt
+erics-students/

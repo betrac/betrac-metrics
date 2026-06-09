@@ -463,6 +463,47 @@ def cmd_download_references(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_download_transcripts(args: argparse.Namespace) -> int:
+    """Download ground-truth reference transcripts from HuggingFace as JSONL.
+
+    These are the labeled DOCTOR/PATIENT reference dialogues (``transcript.txt``)
+    used by ``soap-judge`` — NOT ASR hypotheses. Keyed by the dataset UUID, the
+    same id scheme as references.
+    """
+    from btc_eval.io import _get_transcript_cache_path, _stream_transcripts_from_hf
+
+    split = args.split
+    print(f"Downloading reference transcripts from HuggingFace (split={split})...")
+    try:
+        transcripts = _stream_transcripts_from_hf("BeTraC/betrac-2026", split)
+    except ImportError:
+        print(
+            "Error: 'datasets' library required.\n"
+            "Install with:  uv pip install '.[hf]'",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not transcripts:
+        print("Error: no transcripts found", file=sys.stderr)
+        return 1
+
+    out = Path(args.output) if args.output else _get_transcript_cache_path(
+        "BeTraC/betrac-2026", split
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", encoding="utf-8") as f:
+        for did, transcript in sorted(transcripts.items()):
+            f.write(json.dumps({"id": did, "transcript": transcript}, ensure_ascii=False) + "\n")
+    print(f"Wrote {len(transcripts)} reference transcripts to {out}")
+    print(
+        "Note: ids are dataset UUIDs (like references). Map dialog_* prediction "
+        "ids with scripts/map_ids.py before running soap-judge if your predictions "
+        "use dialog_* ids."
+    )
+    return 0
+
+
 def cmd_rouge(args: argparse.Namespace) -> int:
     """Run ROUGE 1/2/3/4/L evaluation. Returns 0 on success, 1 on error."""
     try:
@@ -737,6 +778,24 @@ def main() -> int:
     )
     dl_parser.set_defaults(func=cmd_download_references)
 
+    # --- download-transcripts ---
+    dlt_parser = subparsers.add_parser(
+        "download-transcripts",
+        help="Download ground-truth reference transcripts from HuggingFace (for soap-judge)",
+    )
+    dlt_parser.add_argument(
+        "--split",
+        default="validation",
+        help="Dataset split: train, validation, or test (default: validation)",
+    )
+    dlt_parser.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Output JSONL path (default: cache in ~/.cache/btc-eval/)",
+    )
+    dlt_parser.set_defaults(func=cmd_download_transcripts)
+
     # --- rouge ---
     rouge_parser = subparsers.add_parser(
         "rouge",
@@ -824,6 +883,15 @@ def main() -> int:
         help="Include open-medical (MeSH + scispaCy) concept F1 metrics",
     )
     compare_parser.set_defaults(func=cmd_compare)
+
+    # --- soap-judge (LLM-as-a-judge) + soap-aggregate (merge sharded outputs) ---
+    from btc_eval.soap_judge.cli import (
+        add_soap_aggregate_parser,
+        add_soap_judge_parser,
+    )
+
+    add_soap_judge_parser(subparsers)
+    add_soap_aggregate_parser(subparsers)
 
     args = parser.parse_args()
 

@@ -83,3 +83,77 @@ class RougeResult:
     def f_scores_dict(self) -> dict[str, float]:
         """Return only the F-measure for each ROUGE type."""
         return {rt: s.fmeasure for rt, s in self.scores.items()}
+
+
+# SOAP LLM-judge types (used by btc_eval.soap_judge)
+
+# The four 0-5 subscores the judge assigns, in display order.
+SOAP_SUBSCORES = ("faithfulness", "structure", "coverage", "conciseness")
+
+# Per-claim error types the judge may tag (see soap_judge/prompts.py).
+SOAP_ERROR_TYPES = (
+    "missing_support",
+    "contradiction",
+    "over_specific",
+    "over_medicalization",
+    "under_medicalization",
+    "wrong_section",
+    "other",
+)
+
+# Column order for the per-dialog SOAP judge CSV.
+SOAP_CSV_COLUMNS = (
+    "id",
+    "faithfulness",
+    "structure",
+    "coverage",
+    "conciseness",
+    "over_medicalization",
+    "under_medicalization",
+    "over_specific",
+    "hallucination_rate",
+    "contradiction_rate",
+    "missed_claims",
+    "critical_omissions",
+    "redundancy_count",
+)
+
+
+@dataclass
+class SoapScores:
+    """Flattened per-dialog scores from one SOAP judgment.
+
+    The four subscores are 0-5 (higher is better); the remaining fields are
+    error counts and rates extracted from the judge's ``metrics`` block. The
+    dialog ``id`` is injected by the caller into the row dict, not stored here
+    (mirroring the ConceptMetrics/RougeResult convention).
+    """
+
+    faithfulness: int
+    structure: int
+    coverage: int
+    conciseness: int
+    over_medicalization: int
+    under_medicalization: int
+    over_specific: int
+    hallucination_rate: float
+    contradiction_rate: float
+    missed_claims: int
+    critical_omissions: int
+    redundancy_count: int
+
+    def to_dict(self) -> dict:
+        return {
+            "faithfulness": self.faithfulness,
+            "structure": self.structure,
+            "coverage": self.coverage,
+            "conciseness": self.conciseness,
+            "over_medicalization": self.over_medicalization,
+            "under_medicalization": self.under_medicalization,
+            "over_specific": self.over_specific,
+            "hallucination_rate": self.hallucination_rate,
+            "contradiction_rate": self.contradiction_rate,
+            "missed_claims": self.missed_claims,
+            "critical_omissions": self.critical_omissions,
+            "redundancy_count": self.redundancy_count,
+        }

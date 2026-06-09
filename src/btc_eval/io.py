@@ -44,6 +44,41 @@ def load_summaries_jsonl(path: str | Path) -> dict[str, str]:
     return summaries
 
 
+def load_transcripts_jsonl(path: str | Path) -> dict[str, str]:
+    """Load a JSONL file with 'id' and 'transcript' fields.
+
+    Returns a dict mapping dialog ID to transcript text. Used by the SOAP judge,
+    which scores a note against the doctor-patient transcript it was written from.
+    Lines missing 'id' or 'transcript' are skipped with a warning.
+    """
+    transcripts: dict[str, str] = {}
+    path = Path(path)
+    if not path.exists():
+        log.error("File not found: %s", path)
+        return transcripts
+    with open(path, encoding="utf-8") as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                log.warning("Line %d in %s is not valid JSON, skipping", line_num, path)
+                continue
+            dialog_id = record.get("id")
+            transcript = record.get("transcript")
+            if dialog_id is None or transcript is None:
+                log.warning("Line %d in %s missing 'id' or 'transcript', skipping",
+                            line_num, path)
+                continue
+            if dialog_id in transcripts:
+                log.warning("Duplicate ID '%s' at line %d in %s (overwriting previous)",
+                            dialog_id, line_num, path)
+            transcripts[dialog_id] = transcript
+    return transcripts
+
+
 def load_references_from_dir(
     dir_path: str | Path,
     filter_ids: set[str] | None = None,
@@ -163,6 +198,57 @@ def _stream_references_from_hf(dataset: str, split: str) -> dict[str, str]:
 
     log.info("Loaded %d references from %s [%s]", len(summaries), dataset, split)
     return summaries
+
+
+def _get_transcript_cache_path(dataset: str, split: str) -> Path:
+    """Return the cache file path for a dataset/split's reference transcripts."""
+    safe_name = dataset.replace("/", "_")
+    return _CACHE_DIR / f"transcripts-{safe_name}-{split}.jsonl"
+
+
+def _stream_transcripts_from_hf(dataset: str, split: str) -> dict[str, str]:
+    """Stream ground-truth reference transcripts from the HuggingFace WebDataset.
+
+    The value is the dataset's ``transcript.txt`` — the labeled DOCTOR/PATIENT
+    reference dialogue, NOT an ASR hypothesis. Keyed by the sample's canonical
+    UUID (from the ``json`` metadata), the same id scheme as the references.
+    Use ``scripts/map_ids.py`` to align ``dialog_*`` prediction ids if needed.
+    """
+    import ast
+
+    from datasets import load_dataset
+
+    ds = load_dataset(dataset, split=split, streaming=True)
+    transcripts: dict[str, str] = {}
+
+    for i, item in enumerate(ds):
+        sample_id = f"sample_{i:04d}"
+        meta_raw = item.get("json", "")
+        if isinstance(meta_raw, dict):
+            sample_id = str(meta_raw.get("id", sample_id))
+        elif isinstance(meta_raw, (str, bytes, bytearray)):
+            if isinstance(meta_raw, (bytes, bytearray)):
+                meta_raw = meta_raw.decode("utf-8")
+            if meta_raw:
+                try:
+                    sample_id = str(json.loads(meta_raw).get("id", sample_id))
+                except json.JSONDecodeError:
+                    try:
+                        sample_id = str(ast.literal_eval(meta_raw).get("id", sample_id))
+                    except (ValueError, SyntaxError):
+                        pass
+
+        transcript = item.get("transcript.txt", "")
+        if not transcript:
+            log.warning("Item %d (%s) has no transcript.txt, skipping", i, sample_id)
+            continue
+        if isinstance(transcript, (bytes, bytearray)):
+            transcript = transcript.decode("utf-8")
+
+        transcripts[sample_id] = transcript
+
+    log.info("Loaded %d transcripts from %s [%s]", len(transcripts), dataset, split)
+    return transcripts
 
 
 def build_reference_jsonl(

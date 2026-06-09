@@ -90,6 +90,9 @@ uv pip install ".[rouge]"              # ROUGE scoring only
 uv pip install ".[hf]"                 # HuggingFace auto-loading for references
 uv pip install ".[scispacy]"           # scispaCy NER for broader concept coverage
 uv pip install ".[rouge,hf]"           # ROUGE + HuggingFace (no scispaCy)
+uv pip install ".[llm-judge]"          # LLM-as-a-judge (Ollama / OpenRouter; needs requests)
+uv pip install ".[llm-bedrock]"        # ...plus the AWS Bedrock judge backend (boto3)
+uv pip install ".[llm-anthropic]"      # ...plus the first-party Anthropic judge backend
 ```
 
 The scispaCy model download is always a separate step — it's not on PyPI:
@@ -240,6 +243,132 @@ Downloads reference SOAP notes from the HuggingFace dataset without the audio da
 The `evaluate` command does this automatically, but this is useful to pre-download
 references or save them to a specific location.
 
+### `btc-eval download-transcripts` — Download reference transcripts from HuggingFace
+
+```bash
+# Cache locally (default: ~/.cache/btc-eval/transcripts-...-validation.jsonl)
+uv run btc-eval download-transcripts --split validation
+
+# Or save to a specific file
+uv run btc-eval download-transcripts --split validation --output transcripts.jsonl
+```
+
+Downloads the ground-truth `transcript.txt` (labeled `DOCTOR:`/`PATIENT:` dialogue)
+for each dialog — the input the `soap-judge` command judges against. Keyed by the
+dataset UUID, like references.
+
+### `btc-eval soap-judge` — LLM-as-a-judge (post-competition diagnostic)
+
+Scores generated SOAP notes against the doctor–patient transcript they were
+written from, using an LLM as a strict, evidence-bound judge. Unlike Concept F1
+and ROUGE (deterministic, reference-based), this is a model-based diagnostic
+across four dimensions — **faithfulness, structure, coverage, conciseness**.
+The judge backend is pluggable: a local model via Ollama (default, no API key),
+OpenRouter, AWS Bedrock, or first-party Anthropic.
+
+> **Use the reference transcript, not an ASR hypothesis.** The judge measures
+> faithfulness to *what was actually said*, so it must compare against the
+> ground-truth `transcript.txt` from the dataset — feeding it an ASR transcript
+> turns recognition errors into "ground truth" and breaks speaker attribution
+> (the rubric needs the `DOCTOR:`/`PATIENT:` labels). Fetch the references with
+> `btc-eval download-transcripts` (below).
+
+```bash
+# 0. Get the ground-truth reference transcripts (cached, keyed by dataset UUID)
+uv run btc-eval download-transcripts --split validation
+
+# 1. Local model via Ollama (default backend) — no API key required
+ollama serve &                 # in another shell
+ollama pull llama3.1:8b
+
+uv run btc-eval soap-judge \
+    --predictions preds.jsonl \  # {"id","summary"} — summary = the SOAP note
+    --transcripts ~/.cache/btc-eval/transcripts-BeTraC_betrac-2026-validation.jsonl \
+    --backend ollama --model llama3.1:8b \
+    --output results/
+```
+
+Predictions and transcripts must share an id scheme. `download-transcripts` keys
+by the dataset UUID (like references); if your predictions use `dialog_*` ids,
+map them first with `scripts/map_ids.py`.
+
+It runs in two LLM stages — extract atomic claims, then judge — both parallelized
+(`--workers`) and resume-safe: raw responses are cached under the output dir, so a
+re-run skips completed calls. A live progress line reports per-call timing and an
+ETA, and a timing breakdown is printed and saved. Outputs:
+
+- `soap_eval_summary.csv` — one row per dialog (4 subscores + error counts/rates)
+- `soap_judge_per_dialog.jsonl` — same data as JSONL
+- `summary.json` — aggregate means/stds, per-stage `timing`, and `extract_parse_failures`
+- `failures.jsonl` — any notes whose judgment did not parse (for inspection)
+
+> **Reasoning models** (`gpt-oss`, `deepseek-r1`, `*-thinking`) spend output
+> tokens on hidden reasoning, so the verbose claims JSON can truncate at the
+> default `--max-tokens 16000` — use `20000+`. A truncated extraction is
+> reported as an `extract_parse_failures` count (those notes are judged on an
+> empty claim set, which inflates faithfulness).
+
+Other backends (set credentials via the usual env vars):
+
+```bash
+# OpenRouter (hosted models) — needs OPENROUTER_API_KEY
+uv run btc-eval soap-judge --backend openrouter --model z-ai/glm-4.7 \
+    --predictions preds.jsonl --transcripts transcripts.jsonl --output results/
+
+# AWS Bedrock — credentials from the standard boto3 chain
+uv run btc-eval soap-judge --backend bedrock --model us.anthropic.claude-opus-4-8-v1:0 \
+    --region us-east-1 \
+    --predictions preds.jsonl --transcripts transcripts.jsonl --output results/
+
+# First-party Anthropic — needs ANTHROPIC_API_KEY
+uv run btc-eval soap-judge --backend anthropic --model claude-opus-4-8 \
+    --predictions preds.jsonl --transcripts transcripts.jsonl --output results/
+```
+
+> **Scores are not comparable across backends or models** — the judge model is
+> part of the metric definition. Fix one judge model when comparing systems.
+
+### Multi-team / data-parallel evaluation — `--shard i/N` + `soap-aggregate`
+
+Scoring multiple submissions is just running the same two-stage judge once per
+submission (the claims come from each team's own note, so there's nothing shared
+to precompute). Within a submission, dialogs are independent and id-keyed, so a
+run splits cleanly across nodes for SLURM data-parallelism. `soap-judge` takes
+`--shard i/N`, which deterministically selects the dialogs where
+`stable_hash(id) % N == i` (no file pre-splitting; the same id always lands in the
+same shard). `soap-aggregate` then pools the per-shard per-dialog rows and
+**recomputes** the aggregate (the correct way to combine shards — *not* averaging
+per-shard means).
+
+```bash
+# SLURM array task i of N (1 GPU each): judge only this shard of one team's notes
+btc-eval soap-judge \
+    --predictions team_a.jsonl --transcripts transcripts.jsonl \
+    --backend ollama --model gpt-oss:20b --max-tokens 20000 \
+    --shard ${SLURM_ARRAY_TASK_ID}/${N} \
+    --output out/team_a/shard_${SLURM_ARRAY_TASK_ID}/
+
+# after the array finishes: merge this team's shards into one summary
+btc-eval soap-aggregate \
+    --inputs 'out/team_a/shard_*/soap_judge_per_dialog.jsonl' \
+    --output out/team_a/aggregated/
+```
+
+Each shard writes its own `--output` (so per-task `summary.json` files never race),
+and the per-dialog raw cache makes a failed shard cheap to re-run. The transcripts
+are read-only and shared by every shard. For local models prefer fewer/larger
+shards (1 GPU/task, model-load overhead); for hosted APIs use many shards × higher
+`--workers`. Run one array per submission (or a `teams × shards` array), then
+`soap-aggregate` each team separately.
+
+**Extending it.** Add a new backend by dropping a `@register("name")` class with a
+`complete(messages, model, ...) -> str` method into
+`src/btc_eval/soap_judge/backends/` (see `ollama.py`); the pipeline only depends on
+that one method. Override the judge/extraction prompts without forking via
+`--prompt-dir DIR` (files `extract_claims.txt` / `judge_soap_note.txt`) or
+`$BTC_SOAP_PROMPT_DIR`. `--backend mock` runs the whole pipeline offline (used by
+the test suite).
+
 ## Python API
 
 ```python
@@ -308,6 +437,9 @@ the valid lines. If your dialog count is unexpectedly low, check stderr for
 | `datasets library is required` | `uv pip install ".[hf]"` |
 | `spaCy not installed` | `uv pip install ".[scispacy]"` |
 | `scispaCy model not found` | `uv pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_md-0.5.4.tar.gz` |
+| `soap-judge` ollama/openrouter backend needs `requests` | `uv pip install ".[llm-judge]"` |
+| `soap-judge` bedrock backend needs `boto3` | `uv pip install ".[llm-bedrock]"` |
+| `soap-judge` anthropic backend needs the SDK | `uv pip install ".[llm-anthropic]"` |
 
 ### `ConfigValidationError` when loading scispaCy
 
@@ -369,18 +501,30 @@ uv run ruff format src/ tests/
 ```
 src/btc_eval/
 ├── __init__.py              # Package exports
-├── cli.py                   # CLI (evaluate, concept-f1, rouge, compare, build-references)
+├── cli.py                   # CLI (evaluate, concept-f1, rouge, compare, build-references, soap-judge)
 ├── compare.py               # Batch comparison (organizer use)
 ├── io.py                    # I/O: JSONL, directory, HuggingFace loading
-├── types.py                 # Data types (ConceptMetrics, RougeResult, etc.)
+├── types.py                 # Data types (ConceptMetrics, RougeResult, SoapScores, etc.)
 ├── matchers/
 │   ├── __init__.py          # Matcher protocol
 │   ├── mock.py              # Mock matcher for testing
 │   └── open_medical.py      # MeSH + scispaCy matcher
-└── metrics/
-    ├── concept_f1.py        # Concept F1/Precision/Recall
-    ├── rouge.py             # ROUGE evaluation
-    └── utils.py             # Bootstrap and analytical confidence intervals
+├── metrics/
+│   ├── concept_f1.py        # Concept F1/Precision/Recall
+│   ├── rouge.py             # ROUGE evaluation
+│   └── utils.py             # Bootstrap and analytical confidence intervals
+└── soap_judge/              # LLM-as-a-judge (faithfulness/structure/coverage/conciseness)
+    ├── prompts.py           # Judge + claim-extraction templates (+ override loader)
+    ├── pipeline.py          # run_extract / run_judge (threaded, resume-safe) + aggregate
+    ├── parse.py             # Lenient JSON extraction and score flattening
+    ├── cli.py               # soap-judge subcommand handler
+    └── backends/            # Pluggable LLM backends
+        ├── __init__.py      # LLMBackend protocol + registry + factory
+        ├── mock.py          # Offline deterministic backend (tests)
+        ├── ollama.py        # Local / OpenAI-compatible (default)
+        ├── openrouter.py    # Hosted models via OpenRouter
+        ├── bedrock.py       # AWS Bedrock (Anthropic Messages API)
+        └── anthropic.py     # First-party Anthropic SDK
 ```
 
 ## Related Repositories
