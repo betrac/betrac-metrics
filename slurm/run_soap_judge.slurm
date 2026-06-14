@@ -84,6 +84,10 @@ mkdir -p "${SHARD_OUT}"
 # ---------------------------------------------------------------------------
 # Load modules and start a per-task Ollama instance
 # ---------------------------------------------------------------------------
+# Capture the desired (writable) model cache before 'module load' — the OSC
+# ollama module overrides OLLAMA_MODELS with a read-only shared path.
+WANT_OLLAMA_MODELS="${OLLAMA_MODELS:-${HOME}/.ollama/models}"
+
 # `module` may be a function on login shells but absent in batch; guard it.
 if command -v module >/dev/null 2>&1; then
     module purge
@@ -92,9 +96,14 @@ if command -v module >/dev/null 2>&1; then
     module load "${PYTHON_MODULE}"
 fi
 
-export OLLAMA_MODELS="${OLLAMA_MODELS:-${HOME}/.ollama/models}"
+# Re-apply the writable cache the module just clobbered.
+export OLLAMA_MODELS="${WANT_OLLAMA_MODELS}"
 export OLLAMA_LOAD_TIMEOUT="${OLLAMA_LOAD_TIMEOUT:-10m}"
-export OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-16384}"
+# Judge stage needs ~20k tokens (transcript + note + extracted claims + output).
+# NOTE: OSC's ollama_start_helper uses `apptainer run --cleanenv`, which STRIPS
+# this var — the server then auto-picks a context from VRAM (32k on A100-40GB).
+# This value only takes effect on clusters whose server inherits the env.
+export OLLAMA_CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-32768}"
 export PYTHONUNBUFFERED=1
 
 # Use a newer Ollama image if provided (overrides the module's $OLLAMA_IMG); the
