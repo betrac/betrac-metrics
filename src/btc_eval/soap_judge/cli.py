@@ -143,7 +143,7 @@ def _print_soap_summary(summary: dict, n_eval: int, n_fail: int) -> None:
     print(f"Backend: {summary.get('backend')}   Model: {summary.get('model')}")
     print(f"Judged: {n_eval}   Failed to parse: {n_fail}")
     if n_eval:
-        print("\n  Subscores (0-5, mean ± std):")
+        print("\n  Subscores (1-5, mean ± std):")
         for field in ("faithfulness", "structure", "coverage", "conciseness"):
             mean = summary.get(f"mean_{field}", 0.0)
             std = summary.get(f"std_{field}", 0.0)

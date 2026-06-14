@@ -65,11 +65,11 @@ def parse_claims(raw_text: str) -> dict | None:
 def parse_judgment(raw_text: str) -> dict | None:
     """Parse a stage-2 judging response.
 
-    Returns the judgment object only if it carries the ``subscores_0_to_5`` block
+    Returns the judgment object only if it carries the ``subscores_1_to_5`` block
     that downstream scoring depends on; otherwise ``None`` (treated as a failure).
     """
     obj = extract_json_object(raw_text)
-    if obj is None or "subscores_0_to_5" not in obj:
+    if obj is None or "subscores_1_to_5" not in obj:
         return None
     return obj
 
@@ -118,7 +118,7 @@ def _tally_error_types(judgment: dict) -> dict[str, int]:
 
 def judgment_to_scores(judgment: dict) -> SoapScores:
     """Flatten a judgment JSON object into the per-dialog :class:`SoapScores`."""
-    subs = judgment.get("subscores_0_to_5", {}) or {}
+    subs = judgment.get("subscores_1_to_5", {}) or {}
     metrics = judgment.get("metrics", {}) or {}
     rates = metrics.get("rates", {}) or {}
     claim_counts = metrics.get("claim_counts", {}) or {}

@@ -55,13 +55,13 @@ class TestExtractJson:
 
 class TestParseJudgment:
     def test_requires_subscores(self):
-        # Object without subscores_0_to_5 is treated as a failure.
+        # Object without subscores_1_to_5 is treated as a failure.
         assert parse_judgment('{"doc_type": "soap_judgment"}') is None
 
     def test_valid_judgment(self):
-        obj = parse_judgment('{"subscores_0_to_5": {"faithfulness_grounding": 4}}')
+        obj = parse_judgment('{"subscores_1_to_5": {"faithfulness_grounding": 4}}')
         assert obj is not None
-        assert obj["subscores_0_to_5"]["faithfulness_grounding"] == 4
+        assert obj["subscores_1_to_5"]["faithfulness_grounding"] == 4
 
 
 class TestSafeCoerce:
@@ -79,7 +79,7 @@ class TestSafeCoerce:
 class TestJudgmentToScores:
     def test_pipe_joined_error_types_are_tallied(self):
         judgment = {
-            "subscores_0_to_5": {
+            "subscores_1_to_5": {
                 "faithfulness_grounding": 4,
                 "structure_formatting": 5,
                 "coverage_completeness": 3,
@@ -109,7 +109,7 @@ class TestJudgmentToScores:
 
     def test_explicit_count_overrides_tally(self):
         judgment = {
-            "subscores_0_to_5": {},
+            "subscores_1_to_5": {},
             "metrics": {"over_medicalization_count": 9},
             "claim_judgments": [{"error_types": ["over_medicalization"]}],
         }
@@ -142,7 +142,7 @@ def test_mock_backend_returns_valid_json():
     )
     judgment = json.loads(backend.complete([{"role": "user", "content": judge_prompt}], "m"))
     assert judgment["doc_type"] == "soap_judgment"
-    assert "subscores_0_to_5" in judgment
+    assert "subscores_1_to_5" in judgment
 
 
 def test_prompt_override(tmp_path):

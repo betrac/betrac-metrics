@@ -87,7 +87,7 @@ class RougeResult:
 
 # SOAP LLM-judge types (used by btc_eval.soap_judge)
 
-# The four 0-5 subscores the judge assigns, in display order.
+# The four 1-5 subscores the judge assigns, in display order.
 SOAP_SUBSCORES = ("faithfulness", "structure", "coverage", "conciseness")
 
 # Per-claim error types the judge may tag (see soap_judge/prompts.py).
@@ -123,7 +123,7 @@ SOAP_CSV_COLUMNS = (
 class SoapScores:
     """Flattened per-dialog scores from one SOAP judgment.
 
-    The four subscores are 0-5 (higher is better); the remaining fields are
+    The four subscores are 1-5 (higher is better); the remaining fields are
     error counts and rates extracted from the judge's ``metrics`` block. The
     dialog ``id`` is injected by the caller into the row dict, not stored here
     (mirroring the ConceptMetrics/RougeResult convention).

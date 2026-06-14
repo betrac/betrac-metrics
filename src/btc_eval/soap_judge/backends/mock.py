@@ -73,7 +73,7 @@ class MockBackend:
         over_med = seed % 3
         return {
             "doc_type": "soap_judgment",
-            "subscores_0_to_5": {
+            "subscores_1_to_5": {
                 "faithfulness_grounding": faith,
                 "structure_formatting": structure,
                 "coverage_completeness": coverage,
