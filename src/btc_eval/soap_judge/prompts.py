@@ -113,7 +113,7 @@ EVIDENCE RULES:
 - If you cannot locate explicit evidence, label the claim Not-in-transcript and leave evidence empty.
 - If retrieval candidates are provided, ONLY use those; if none contains evidence, label Not-in-transcript.
 
-SCORING (0–5 each subscore; 5 is best):
+SCORING (1–5 each subscore; 5 is best):
 1) Faithfulness / Grounding: based on Supported vs Contradicted vs Not-in-transcript rates.
 2) Structure / Formatting: correct SOAP headers, correct section placement, forbidden content checks.
 3) Coverage / Completeness: whether key transcript facts are captured (checklist-based).
@@ -255,16 +255,16 @@ Assess:
 Return:
 - redundancy_count
 - low_value_supported_count
-- conciseness_score (0–5) with a brief rationale.
+- conciseness_score (1–5) with a brief rationale.
 
 OUTPUT JSON SCHEMA (return EXACTLY this structure):
 {{
   "doc_type": "soap_judgment",
-  "subscores_0_to_5": {{
-    "faithfulness_grounding": 0,
-    "structure_formatting": 0,
-    "coverage_completeness": 0,
-    "conciseness": 0
+  "subscores_1_to_5": {{
+    "faithfulness_grounding": 1,
+    "structure_formatting": 1,
+    "coverage_completeness": 1,
+    "conciseness": 1
   }},
   "metrics": {{
     "claim_counts": {{
