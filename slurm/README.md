@@ -82,12 +82,13 @@ failed shard cheap to re-run (resume is on by default).
 |-----|---------|---------|
 | `OLLAMA_MODULE`         | `ollama`        | module to `module load` for Ollama |
 | `PYTHON_MODULE`         | `python/3.10`   | module to `module load` for Python |
-| `OLLAMA_MODELS`         | `~/.ollama/models` | shared model cache (login + compute must share it) |
+| `OLLAMA_MODELS`         | `~/.ollama/models` | shared model cache, **writable** (login + compute must share it). On OSC the module clobbers it to a read-only path — the template re-applies your value after `module load`. |
 | `OLLAMA_MODEL`          | `$JUDGE_MODEL`  | tag to pull/pre-warm if it differs from the judge id |
 | `OLLAMA_START_HELPER`   | `ollama_start_helper` | path/name of the per-task server helper |
-| `OLLAMA_CONTEXT_LENGTH` | `16384`         | context window |
+| `OLLAMA_SIF`            | (none)          | bring-your-own Ollama Apptainer image; overrides the module's `$OLLAMA_IMG`. Use when the site's module is too old for the model (e.g. OSC + `gemma4:31b`). See the eval2026 OSC guide. |
+| `OLLAMA_CONTEXT_LENGTH` | `32768`         | context window. Judge stage needs ~20k (transcript+note+claims+output). **On OSC, `apptainer run --cleanenv` strips this** — the server auto-picks from VRAM (32k on A100-40GB). |
 | `MAX_TOKENS`            | `16000`         | max output tokens/call — **reasoning models need 20000+** |
-| `WORKERS`               | `4`             | concurrent in-task requests against the one Ollama server |
+| `WORKERS`               | `4`             | concurrent in-task requests. No benefit when only one slot fits (`NUM_PARALLEL=1`, e.g. a 31B model on a 40 GB card), since the server serializes. |
 | `PREPULL`               | `0`             | `1` = pull the model on the submit (login) node first |
 
 ## Run it (generic cluster)
