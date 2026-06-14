@@ -2,7 +2,7 @@
 
 setup:
 	uv venv
-	uv pip install ".[dev,rouge,scispacy,hf]"
+	uv pip install -e ".[dev,rouge,scispacy,hf,llm-judge]"
 	uv pip install --no-deps https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_md-0.5.4.tar.gz
 
 test:
