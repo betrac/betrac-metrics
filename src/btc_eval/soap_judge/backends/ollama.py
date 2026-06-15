@@ -27,7 +27,7 @@ class OllamaBackend:
         self,
         host: str | None = None,
         api_key: str | None = None,
-        timeout: float = 600.0,
+        timeout: float | None = None,
         **_,
     ) -> None:
         try:
@@ -42,6 +42,10 @@ class OllamaBackend:
         self.url = f"{base}/v1/chat/completions"
         # Ollama ignores the key but the OpenAI client shape expects one.
         self.api_key = api_key or os.environ.get("OLLAMA_API_KEY") or "ollama"
+        # Per-call HTTP timeout. Long judge generations on a busy GPU can exceed
+        # the old 600s default; allow override via $OLLAMA_TIMEOUT (seconds).
+        if timeout is None:
+            timeout = float(os.environ.get("OLLAMA_TIMEOUT", "1800"))
         self.timeout = timeout
 
     def complete(

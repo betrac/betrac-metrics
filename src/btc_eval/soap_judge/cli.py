@@ -98,6 +98,14 @@ def add_soap_judge_parser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Re-run every LLM call even if a cached raw response exists",
     )
+    parser.add_argument(
+        "--cache-dir",
+        default=None,
+        help="Directory for the resume cache (extract_raw/, judge_raw/). Defaults "
+        "to the output dir. Point all shards at ONE shared dir so a completed "
+        "dialog is reused no matter which shard re-processes it (the cache is "
+        "keyed by dialog id, not shard).",
+    )
     parser.set_defaults(func=cmd_soap_judge)
 
 
@@ -207,8 +215,11 @@ def cmd_soap_judge(args: argparse.Namespace) -> int:
 
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
-    extract_raw = None if args.no_cache else out_dir / "extract_raw"
-    judge_raw = None if args.no_cache else out_dir / "judge_raw"
+    # Resume cache: separate from the per-shard output so many shards can share one
+    # id-keyed cache (robust resume regardless of how dialogs map to shards).
+    cache_dir = Path(args.cache_dir) if args.cache_dir else out_dir
+    extract_raw = None if args.no_cache else cache_dir / "extract_raw"
+    judge_raw = None if args.no_cache else cache_dir / "judge_raw"
     resume = not args.no_resume
 
     print(
