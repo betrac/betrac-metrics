@@ -4,7 +4,7 @@
 #
 # Splits one predictions file into fixed-size CHUNK files (exactly
 # SAMPLES_PER_SHARD dialogs each) and runs one array task per chunk, then a CPU
-# aggregate chained with afterok. Even chunking (vs the engine's hash --shard)
+# aggregate chained with afterany. Even chunking (vs the engine's hash --shard)
 # guarantees predictable per-job size and no empty/oversized jobs. Concurrency is
 # throttled (--array=...%MAX_CONCURRENT) to avoid saturating shared storage.
 #
@@ -122,7 +122,7 @@ AGG_JOB_ID=$(echo "${AGG_OUT}" | awk '{print $4}')
 echo ""
 echo "Submitted:"
 echo "  judge array: ${ARRAY_JOB_ID}   (${NUM_CHUNKS} jobs, ${ARRAY_SPEC})"
-echo "  aggregate:   ${AGG_JOB_ID}   (afterok:${ARRAY_JOB_ID})"
+echo "  aggregate:   ${AGG_JOB_ID}   (afterany:${ARRAY_JOB_ID})"
 echo ""
 echo "Result:  ${OUTPUT_DIR}/aggregated/summary.json"
 echo "Monitor: squeue -u \$USER ${CLUSTER:+-M ${CLUSTER}}"
