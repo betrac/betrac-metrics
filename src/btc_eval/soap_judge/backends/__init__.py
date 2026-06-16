@@ -145,6 +145,7 @@ from btc_eval.soap_judge.backends import (  # noqa: E402,F401
     mock,
     ollama,
     openrouter,
+    vllm,
 )
 
 __all__ = [

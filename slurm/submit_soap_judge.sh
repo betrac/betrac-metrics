@@ -22,6 +22,10 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Array script to run per chunk. Default = Ollama; set to run_soap_judge_vllm.slurm
+# for the vLLM engine. The chunking/throttle/aggregate orchestration is shared.
+JUDGE_SCRIPT="${JUDGE_SCRIPT:-${HERE}/run_soap_judge.slurm}"
+
 # --- Required -------------------------------------------------------------
 : "${BTC_VENV:?set BTC_VENV to the venv with btc-eval installed}"
 : "${PREDICTIONS:?set PREDICTIONS to a {id,summary} JSONL}"
@@ -69,7 +73,9 @@ EXPORT+=",JUDGE_MODEL=${JUDGE_MODEL},OUTPUT_DIR=${OUTPUT_DIR},CHUNK_DIR=${CHUNK_
 EXPORT+=",OLLAMA_MODEL=${OLLAMA_MODEL:-${JUDGE_MODEL}}"
 for v in OLLAMA_MODULE PYTHON_MODULE OLLAMA_MODELS OLLAMA_START_HELPER OLLAMA_SIF \
          OLLAMA_CONTEXT_LENGTH MAX_TOKENS WORKERS OLLAMA_WARMUP_SECONDS \
-         OLLAMA_TIMEOUT STAGE_MODEL; do
+         OLLAMA_TIMEOUT STAGE_MODEL \
+         VLLM_SIF VLLM_MODEL_DIR VLLM_MAX_LEN VLLM_JUDGE_MAX_TOKENS VLLM_GPU_UTIL VLLM_TP \
+         VLLM_KV_CACHE_DTYPE VLLM_EXTRA_ARGS VLLM_READY_TIMEOUT VLLM_CACHE_DIR APPTAINER_MODULE; do
     [ -n "${!v:-}" ] && EXPORT+=",${v}=${!v}"
 done
 
@@ -101,7 +107,7 @@ ARRAY_OUT=$(sbatch \
     --export="${EXPORT}" \
     --output="${LOG_DIR}/judge_%A_%a.out" \
     --error="${LOG_DIR}/judge_%A_%a.err" \
-    "${HERE}/run_soap_judge.slurm")
+    "${JUDGE_SCRIPT}")
 echo "${ARRAY_OUT}"
 ARRAY_JOB_ID=$(echo "${ARRAY_OUT}" | awk '{print $4}')
 

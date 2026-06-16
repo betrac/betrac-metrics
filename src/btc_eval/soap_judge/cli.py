@@ -33,7 +33,7 @@ def add_soap_judge_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument(
         "--backend",
         default="ollama",
-        choices=["ollama", "openrouter", "bedrock", "anthropic", "mock"],
+        choices=["ollama", "vllm", "openrouter", "bedrock", "anthropic", "mock"],
         help="LLM backend (default: ollama — local, no API key)",
     )
     parser.add_argument(
@@ -67,6 +67,15 @@ def add_soap_judge_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Max output tokens per LLM call (default: 16000). Reasoning models "
         "(gpt-oss, deepseek-r1, *-thinking) spend tokens on hidden reasoning, so "
         "the verbose claims JSON can truncate — use 20000+ for those.",
+    )
+    parser.add_argument(
+        "--judge-max-tokens",
+        type=int,
+        default=None,
+        help="Max output tokens for the JUDGE stage only (default: --max-tokens). "
+        "The judgment is short (~5k), while its prompt is long; backends like vLLM "
+        "reject prompt+max_tokens > max_model_len, so a smaller judge cap avoids "
+        "that without truncating the (short) judgment.",
     )
     parser.add_argument(
         "--host",
@@ -249,7 +258,7 @@ def cmd_soap_judge(args: argparse.Namespace) -> int:
         )
     judged = pipeline.run_judge(
         predictions, transcripts, claims, backend, args.model,
-        workers=args.workers, max_tokens=args.max_tokens,
+        workers=args.workers, max_tokens=(args.judge_max_tokens or args.max_tokens),
         raw_dir=judge_raw, prompt_dir=args.prompt_dir, resume=resume,
     )
 
