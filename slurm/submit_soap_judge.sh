@@ -66,6 +66,15 @@ SBATCH_FLAGS=()
 [ -n "${GPUS:-}" ]       && SBATCH_FLAGS+=(--gpus-per-task="${GPUS}")
 [ -n "${JOB_MEM:-}" ]    && SBATCH_FLAGS+=(--mem="${JOB_MEM}")
 
+# The aggregate is a CPU-only job. Some clusters' GPU-partition QOS requires every
+# job to request a GPU (e.g. OSC Cardinal -> "QOSMinGRES"), which rejects it. Route
+# the aggregate to a CPU partition via AGG_PARTITION (falls back to PARTITION).
+AGG_FLAGS=()
+[ -n "${CLUSTER:-}" ] && AGG_FLAGS+=(--cluster="${CLUSTER}")
+[ -n "${ACCOUNT:-}" ] && AGG_FLAGS+=(--account="${ACCOUNT}")
+AGG_PART="${AGG_PARTITION:-${PARTITION:-}}"
+[ -n "${AGG_PART}" ]  && AGG_FLAGS+=(--partition="${AGG_PART}")
+
 # --- Pass-through env for the array tasks ---------------------------------
 # Each task derives its predictions file from CHUNK_DIR + its array index.
 EXPORT="ALL,BTC_VENV=${BTC_VENV},TRANSCRIPTS=${TRANSCRIPTS}"
@@ -116,7 +125,7 @@ ARRAY_JOB_ID=$(echo "${ARRAY_OUT}" | awk '{print $4}')
 # resume cache, re-running the array then finishes any gaps cheaply and a second
 # aggregate completes the picture. (afterok would yield NOTHING on any failure.)
 AGG_OUT=$(sbatch \
-    "${SBATCH_FLAGS[@]}" \
+    "${AGG_FLAGS[@]}" \
     --dependency=afterany:${ARRAY_JOB_ID} \
     --export="ALL,BTC_VENV=${BTC_VENV},OUTPUT_DIR=${OUTPUT_DIR},NUM_SHARDS=${NUM_CHUNKS}" \
     --output="${LOG_DIR}/aggregate_%j.out" \
