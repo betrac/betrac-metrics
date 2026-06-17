@@ -51,7 +51,9 @@ MAX_TASK=$(( NUM_CHUNKS - 1 ))
 
 # Throttle concurrent array tasks (shared-storage protection). 0/empty = no cap.
 MAX_CONCURRENT="${MAX_CONCURRENT:-24}"
-if [ "${MAX_CONCURRENT}" -gt 0 ] 2>/dev/null; then
+# Validate numeric BEFORE the comparison: `[ x -gt 0 ] 2>/dev/null` only hides the
+# error text — under set -e the non-zero `[` from a non-numeric value still aborts.
+if [[ "${MAX_CONCURRENT}" =~ ^[0-9]+$ ]] && [ "${MAX_CONCURRENT}" -gt 0 ]; then
     ARRAY_SPEC="0-${MAX_TASK}%${MAX_CONCURRENT}"
 else
     ARRAY_SPEC="0-${MAX_TASK}"
@@ -110,29 +112,33 @@ echo "  cluster:     ${CLUSTER:-<none>}  account: ${ACCOUNT:-<none>}  mem: ${JOB
 echo "========================================================"
 
 # --- 1. Judge array -------------------------------------------------------
-ARRAY_OUT=$(sbatch \
+# --parsable makes sbatch print just the job id ("jobid" or "jobid;cluster"),
+# robust to multi-cluster banner output vs scraping field 4 of a human line.
+ARRAY_JOB_ID=$(sbatch --parsable \
     "${SBATCH_FLAGS[@]}" \
     --array="${ARRAY_SPEC}" \
     --export="${EXPORT}" \
     --output="${LOG_DIR}/judge_%A_%a.out" \
     --error="${LOG_DIR}/judge_%A_%a.err" \
-    "${JUDGE_SCRIPT}")
-echo "${ARRAY_OUT}"
-ARRAY_JOB_ID=$(echo "${ARRAY_OUT}" | awk '{print $4}')
+    "${JUDGE_SCRIPT}") || { echo "ERROR: judge array sbatch failed" >&2; exit 1; }
+ARRAY_JOB_ID="${ARRAY_JOB_ID%%;*}"   # strip ';cluster' suffix if present
+echo "Submitted judge array ${ARRAY_JOB_ID}"
 
 # --- 2. Aggregate (afterANY: always run, even if some tasks fail/timeout) --
 # Pools whatever per-dialog rows exist and reports coverage. With the shared
 # resume cache, re-running the array then finishes any gaps cheaply and a second
 # aggregate completes the picture. (afterok would yield NOTHING on any failure.)
-AGG_OUT=$(sbatch \
+# Non-fatal on submit failure: the judge array is already queued, so warn and
+# continue (aggregate by hand) rather than aborting the whole orchestrator.
+AGG_JOB_ID=$(sbatch --parsable \
     "${AGG_FLAGS[@]}" \
     --dependency=afterany:${ARRAY_JOB_ID} \
     --export="ALL,BTC_VENV=${BTC_VENV},OUTPUT_DIR=${OUTPUT_DIR},NUM_SHARDS=${NUM_CHUNKS}" \
     --output="${LOG_DIR}/aggregate_%j.out" \
     --error="${LOG_DIR}/aggregate_%j.err" \
-    "${HERE}/run_soap_aggregate.slurm")
-echo "${AGG_OUT}"
-AGG_JOB_ID=$(echo "${AGG_OUT}" | awk '{print $4}')
+    "${HERE}/run_soap_aggregate.slurm") \
+    || { echo "WARNING: aggregate sbatch failed (judge array ${ARRAY_JOB_ID} still queued; set AGG_PARTITION to a CPU partition and aggregate manually)" >&2; AGG_JOB_ID="(none)"; }
+AGG_JOB_ID="${AGG_JOB_ID%%;*}"
 
 echo ""
 echo "Submitted:"

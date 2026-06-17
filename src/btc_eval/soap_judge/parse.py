@@ -20,21 +20,37 @@ from typing import Any
 
 from btc_eval.types import SOAP_ERROR_TYPES, SoapScores
 
+# Optional lenient-repair fallback. json-repair fixes truncated/glitched JSON
+# (a judgment cut off mid-array, a stray character) that strict parsing drops.
+# It is optional so the package still imports without it; declare it in the
+# ``llm-judge`` extra so production installs include it.
+try:
+    from json_repair import repair_json as _repair_json
+except Exception:  # pragma: no cover - optional dependency
+    _repair_json = None
+
 _REASONING_RE = re.compile(r"<reasoning>.*?</reasoning>", re.DOTALL)
 _FENCE_JSON_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
 _FENCE_RE = re.compile(r"```\s*(\{.*?\})\s*```", re.DOTALL)
 
 
-def extract_json_object(text: str) -> dict | None:
-    """Best-effort extraction of one JSON object from assistant text.
+def extract_json_with_status(text: str) -> tuple[dict | None, str]:
+    """Extract one JSON object from assistant text AND report how it parsed.
 
-    Strategy (first success wins): strip ``<reasoning>`` blocks, then try a
+    Returns ``(obj, status)``. ``status`` is one of:
+
+    - ``"strict"``      parsed as-is (the common case);
+    - ``"repaired"``    only parsed after ``json-repair`` (truncated / malformed
+      output whose content is still recoverable);
+    - ``"empty"``       no text at all;
+    - ``"unparseable"`` no dict recoverable even after repair.
+
+    Strict strategy (first success wins): strip ``<reasoning>`` blocks, then try a
     ```` ```json ```` fence, a bare ```` ``` ```` fence, the substring from the
-    first ``{`` to the last ``}``, and finally the whole string. Returns the
-    parsed object, or ``None`` if nothing parses to a dict.
+    first ``{`` to the last ``}``, and finally the whole string.
     """
     if not text or not text.strip():
-        return None
+        return None, "empty"
     cleaned = _REASONING_RE.sub("", text).strip()
 
     candidates: list[str] = []
@@ -53,25 +69,60 @@ def extract_json_object(text: str) -> dict | None:
         except (json.JSONDecodeError, ValueError):
             continue
         if isinstance(parsed, dict):
-            return parsed
-    return None
+            return parsed, "strict"
+
+    # Lenient fallback. Feed json-repair the text from the first ``{`` to the end
+    # (so it can close a truncated object), then the whole cleaned string.
+    if _repair_json is not None:
+        repair_candidates = ([cleaned[first:]] if first != -1 else []) + [cleaned]
+        for candidate in repair_candidates:
+            try:
+                parsed = json.loads(_repair_json(candidate))
+            except Exception:
+                continue
+            if isinstance(parsed, dict) and parsed:
+                return parsed, "repaired"
+    return None, "unparseable"
+
+
+def extract_json_object(text: str) -> dict | None:
+    """Best-effort extraction of one JSON object (drops the status)."""
+    return extract_json_with_status(text)[0]
+
+
+def parse_claims_with_status(raw_text: str) -> tuple[dict | None, str]:
+    """Parse a stage-1 claim-extraction response, reporting how it parsed."""
+    return extract_json_with_status(raw_text)
 
 
 def parse_claims(raw_text: str) -> dict | None:
     """Parse a stage-1 claim-extraction response into a ``soap_claims`` object."""
-    return extract_json_object(raw_text)
+    return extract_json_with_status(raw_text)[0]
+
+
+def parse_judgment_with_status(raw_text: str) -> tuple[dict | None, str]:
+    """Parse a stage-2 judging response, reporting how it parsed.
+
+    ``status`` is ``"strict"`` / ``"repaired"`` when a judgment carrying the
+    ``subscores_1_to_5`` block is recovered; ``"no_subscores"`` when JSON parsed
+    but lacks that block; ``"empty"`` / ``"unparseable"`` otherwise. Only the
+    first two are usable; the rest are failures.
+    """
+    obj, status = extract_json_with_status(raw_text)
+    if obj is None:
+        return None, status
+    if "subscores_1_to_5" not in obj:
+        return None, "no_subscores"
+    return obj, status
 
 
 def parse_judgment(raw_text: str) -> dict | None:
-    """Parse a stage-2 judging response.
+    """Parse a stage-2 judging response (drops the status).
 
     Returns the judgment object only if it carries the ``subscores_1_to_5`` block
     that downstream scoring depends on; otherwise ``None`` (treated as a failure).
     """
-    obj = extract_json_object(raw_text)
-    if obj is None or "subscores_1_to_5" not in obj:
-        return None
-    return obj
+    return parse_judgment_with_status(raw_text)[0]
 
 
 def safe_int(x: Any, default: int = 0) -> int:

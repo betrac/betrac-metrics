@@ -10,7 +10,9 @@
 
 # Reusable combine step: pool the per-shard per-dialog rows and RECOMPUTE the
 # aggregate (the correct way to merge shards — not averaging per-shard means).
-# Runs on CPU only; chained after the judge array with --dependency=afterok.
+# Runs on CPU only; chained after the judge array with --dependency=afterany
+# (always runs, pooling whatever per-dialog rows exist — afterok would yield
+# nothing if any array task failed/timed out).
 #
 # DO NOT submit directly — use submit_soap_judge.sh.
 #

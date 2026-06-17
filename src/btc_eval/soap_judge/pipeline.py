@@ -22,7 +22,12 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from btc_eval.soap_judge.backends import LLMBackend
-from btc_eval.soap_judge.parse import parse_claims, parse_judgment
+from btc_eval.soap_judge.parse import (
+    parse_claims,
+    parse_claims_with_status,
+    parse_judgment,
+    parse_judgment_with_status,
+)
 from btc_eval.soap_judge.prompts import load_prompt
 from btc_eval.types import SOAP_SUBSCORES, SoapScores
 
@@ -60,8 +65,14 @@ def select_shard(keys: Iterable[str], index: int, count: int) -> list[str]:
     ]
 
 
-def _load_cached_raw(raw_dir: Path | None, dialog_id: str) -> str | None:
-    """Return the cached raw assistant text for a dialog, or None."""
+def _load_cached_raw(raw_dir: Path | None, dialog_id: str, model: str) -> str | None:
+    """Return the cached raw assistant text for a dialog, or None.
+
+    Keyed by dialog id but ALSO validated against ``model``: a cached response
+    written by a *different* model/precision is treated as a miss (re-issued), so
+    pointing two runs (e.g. W4A16 then BF16) at one ``--cache-dir`` can never
+    silently serve the first model's judgments to the second.
+    """
     if raw_dir is None:
         return None
     path = raw_dir / f"{dialog_id}.json"
@@ -70,6 +81,8 @@ def _load_cached_raw(raw_dir: Path | None, dialog_id: str) -> str | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
+        return None
+    if data.get("model") != model:
         return None
     raw = data.get("raw_content")
     return raw if isinstance(raw, str) and raw.strip() else None
@@ -164,6 +177,7 @@ def run_extract(
     raw_dir: str | Path | None = None,
     prompt_dir: str | None = None,
     resume: bool = True,
+    retry_failed: bool = False,
     system: str | None = None,
 ) -> dict[str, dict]:
     """Stage 1 — extract atomic claims from each SOAP note.
@@ -186,7 +200,11 @@ def run_extract(
 
     def _work(dialog_id: str, note: object) -> dict:
         t0 = time.perf_counter()
-        cached = _load_cached_raw(raw_path, dialog_id) if resume else None
+        cached = _load_cached_raw(raw_path, dialog_id, model) if resume else None
+        # --retry-failed: a cached response that no longer parses is re-issued
+        # (so raising --max-tokens to fix a truncation actually takes effect).
+        if cached is not None and retry_failed and parse_claims(cached) is None:
+            cached = None
         was_cached = cached is not None
         if was_cached:
             raw = cached
@@ -203,14 +221,16 @@ def run_extract(
             except Exception as exc:
                 log.warning("[extract] LLM error for %s: %s", dialog_id, exc)
                 return {"raw_content": "", "claims": None, "status": "llm_error",
+                        "parse_status": "llm_error",
                         "error": str(exc), "elapsed_sec": time.perf_counter() - t0,
                         "cached": False}
             _write_cached_raw(raw_path, dialog_id, model, raw)
-        claims = parse_claims(raw)
+        claims, parse_status = parse_claims_with_status(raw)
         return {
             "raw_content": raw,
             "claims": claims,
             "status": "parsed" if claims is not None else "parse_failed",
+            "parse_status": parse_status,  # strict / repaired / unparseable / empty
             "elapsed_sec": time.perf_counter() - t0,
             "cached": was_cached,
         }
@@ -230,6 +250,7 @@ def run_judge(
     raw_dir: str | Path | None = None,
     prompt_dir: str | None = None,
     resume: bool = True,
+    retry_failed: bool = False,
     system: str | None = None,
 ) -> dict[str, dict]:
     """Stage 2 — judge each note against its transcript and extracted claims.
@@ -261,8 +282,15 @@ def run_judge(
         t0 = time.perf_counter()
         note = predictions[dialog_id]
         transcript = transcripts[dialog_id]
-        extraction = (claims_by_id.get(dialog_id) or {}).get("claims") or _EMPTY_CLAIMS
-        cached = _load_cached_raw(raw_path, dialog_id) if resume else None
+        extract_result = claims_by_id.get(dialog_id) or {}
+        claims_obj = extract_result.get("claims")
+        # An extract failure leaves no claims; judging on an EMPTY claim set
+        # inflates faithfulness, so flag it (the caller reports/handles it).
+        empty_claims = claims_obj is None
+        extraction = claims_obj or _EMPTY_CLAIMS
+        cached = _load_cached_raw(raw_path, dialog_id, model) if resume else None
+        if cached is not None and retry_failed and parse_judgment(cached) is None:
+            cached = None
         was_cached = cached is not None
         if was_cached:
             raw = cached
@@ -283,14 +311,17 @@ def run_judge(
             except Exception as exc:
                 log.warning("[judge] LLM error for %s: %s", dialog_id, exc)
                 return {"raw_content": "", "judgment": None, "status": "llm_error",
+                        "parse_status": "llm_error", "empty_claims": empty_claims,
                         "error": str(exc), "elapsed_sec": time.perf_counter() - t0,
                         "cached": False}
             _write_cached_raw(raw_path, dialog_id, model, raw)
-        judgment = parse_judgment(raw)
+        judgment, parse_status = parse_judgment_with_status(raw)
         return {
             "raw_content": raw,
             "judgment": judgment,
             "status": "parsed" if judgment is not None else "parse_failed",
+            "parse_status": parse_status,  # strict / repaired / no_subscores / unparseable / empty
+            "empty_claims": empty_claims,  # judged on empty claims (faithfulness inflated)
             "elapsed_sec": time.perf_counter() - t0,
             "cached": was_cached,
         }

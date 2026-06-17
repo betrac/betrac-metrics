@@ -15,19 +15,23 @@ university `--partition=gpu` cluster, or a cloud SLURM.
 
 | File | Role |
 |------|------|
-| `submit_soap_judge.sh`   | Orchestrator: optional model pre-pull, sizes the array, submits the judge array + the aggregate job (chained `afterok`). |
-| `run_soap_judge.slurm`   | Array task: starts a per-task Ollama, pre-warms the model, judges shard `i/N` (`i = SLURM_ARRAY_TASK_ID`). |
-| `run_soap_aggregate.slurm` | CPU task: pools per-shard `soap_judge_per_dialog.jsonl` and **recomputes** the aggregate. |
+| `submit_soap_judge.sh`   | Orchestrator: even-chunks predictions (`split`, exactly `SAMPLES_PER_SHARD` dialogs/chunk), submits the judge array + the aggregate (chained `afterany`, on `AGG_PARTITION` if set). |
+| `run_soap_judge.slurm`   | Array task: starts a per-task Ollama, pre-warms the model, judges its chunk file (`chunk_<i>.jsonl`). |
+| `run_soap_aggregate.slurm` | CPU task: pools per-shard `soap_judge_per_dialog.jsonl` + `soap_judge_status.jsonl` and **recomputes** the aggregate (and the known-error report). |
 
 ## How the parallelism works
 
-`soap-judge --shard i/N` keeps only the dialogs where `stable_hash(id) % N == i` —
-deterministic, no file pre-splitting, the same id always lands in the same shard.
-Each array task writes its own `OUTPUT_DIR/shard_<i>/`, so per-task `summary.json`
-files never race. `soap-aggregate` then pools the per-dialog rows across all
-shards and recomputes mean/std over the union of dialogs (the correct merge — not
-averaging per-shard means). The raw-response cache under each shard dir makes a
-failed shard cheap to re-run (resume is on by default).
+`submit_soap_judge.sh` **even-chunks** the predictions with `split` — exactly
+`SAMPLES_PER_SHARD` dialogs per chunk file (`chunk_0000.jsonl`, …) — and runs one
+array task per chunk (`N` derived from the chunk count, not an input). Even
+chunking gives predictable per-job size/walltime, unlike the older hash-shard
+(`--shard i/N`) which left jobs with 0–N dialogs. Each task writes its own
+`OUTPUT_DIR/shard_<i>/`, so per-task files never race. `soap-aggregate` pools the
+per-dialog rows across shards and recomputes mean/std over the union of dialogs
+(the correct merge — not averaging per-shard means), and consolidates the
+per-shard status into a known-error report. The id-keyed, **model-keyed**
+raw-response cache (point shards at one `--cache-dir`) makes a failed shard cheap
+to re-run (resume on by default); a different model never reuses another's cache.
 
 ## Prerequisites
 
@@ -59,12 +63,12 @@ failed shard cheap to re-run (resume is on by default).
 | `JUDGE_MODEL` | model id for the Ollama backend, e.g. `gemma4:31b` |
 | `OUTPUT_DIR`  | run root; shards land in `$OUTPUT_DIR/shard_<i>/`, result in `$OUTPUT_DIR/aggregated/` |
 
-**Sizing** (pick one)
+**Sizing**
 
 | Var | Meaning |
 |-----|---------|
-| `NUM_SHARDS`        | explicit array width `N` |
-| `SAMPLES_PER_SHARD` | derive `N` from the prediction count (default **40**; local models like fewer/larger shards) |
+| `SAMPLES_PER_SHARD` | dialogs per chunk = per array task; `N` is derived from the chunk count (default **4** for the Ollama/1-req-per-GPU path; vLLM batches, so use 24–48). `NUM_SHARDS` is no longer an input. |
+| `MAX_CONCURRENT`    | cap on simultaneously-running array tasks (`--array=…%MAX_CONCURRENT`); default 24 |
 
 **Cluster** (each added to `sbatch` only if set)
 
@@ -109,7 +113,7 @@ PREDICTIONS=preds.jsonl TRANSCRIPTS=transcripts.jsonl \
 JUDGE_MODEL=gemma4:31b OUTPUT_DIR=out/run1 \
 CLUSTER=ascend ACCOUNT=PAS2138 \
 OLLAMA_MODULE=ollama/0.13.1 OLLAMA_MODELS=$HOME/.ollama/models \
-PREPULL=1 SAMPLES_PER_SHARD=40 \
+PREPULL=1 SAMPLES_PER_SHARD=4 \
 bash slurm/submit_soap_judge.sh
 ```
 
@@ -126,7 +130,7 @@ Outputs:
 - **Shard size vs. walltime.** Each task pays the model-load cost once, then does
   `2 × dialogs` LLM calls (extract + judge). Size shards so a task finishes under
   your cluster's preferential-scheduling window (often 1 h). Start at
-  `SAMPLES_PER_SHARD=40` and adjust from the per-shard timing in `summary.json`.
+  `SAMPLES_PER_SHARD=4` and adjust from the per-shard timing in `summary.json`.
 - **`WORKERS`.** Concurrency against the single per-task Ollama server. 4 is safe;
   raise it only if the GPU is underused (watch `gpu_util.log`).
 - **Re-running.** Resume is on; just resubmit (or `sbatch --array=<failed ids>`

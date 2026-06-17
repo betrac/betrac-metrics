@@ -345,3 +345,56 @@ class TestSoapJudgeCLI:
         # Per-dialog JSONL.
         per_dialog = (out / "soap_judge_per_dialog.jsonl").read_text().strip().split("\n")
         assert len(per_dialog) == 2
+
+
+# ---------------------------------------------------------------------------
+# Lenient repair, model-keyed cache, and the known-error report
+# ---------------------------------------------------------------------------
+
+
+class TestRepairFallback:
+    def test_strict_status(self):
+        from btc_eval.soap_judge.parse import parse_judgment_with_status
+        obj, status = parse_judgment_with_status('{"subscores_1_to_5": {"faithfulness_grounding": 3}}')
+        assert obj is not None and status == "strict"
+
+    def test_truncated_recovers_as_repaired(self):
+        from btc_eval.soap_judge.parse import _repair_json, parse_judgment_with_status
+        if _repair_json is None:
+            pytest.skip("json-repair not installed")
+        truncated = ('```json\n{"subscores_1_to_5": {"faithfulness_grounding": 2, '
+                     '"coverage_completeness": 3}, "claim_judgments": [{"claim": "x", "verd')
+        obj, status = parse_judgment_with_status(truncated)
+        assert obj is not None and status == "repaired"
+        assert obj["subscores_1_to_5"]["faithfulness_grounding"] == 2
+
+    def test_unparseable_and_empty_status(self):
+        from btc_eval.soap_judge.parse import parse_judgment_with_status
+        assert parse_judgment_with_status("not json")[1] == "unparseable"
+        assert parse_judgment_with_status("")[1] == "empty"
+
+
+class TestCacheModelKey:
+    def test_model_mismatch_is_a_miss(self, tmp_path):
+        from btc_eval.soap_judge.pipeline import _load_cached_raw, _write_cached_raw
+        _write_cached_raw(tmp_path, "d1", "model-A", '{"subscores_1_to_5": {}}')
+        assert _load_cached_raw(tmp_path, "d1", "model-A") is not None  # same model -> hit
+        assert _load_cached_raw(tmp_path, "d1", "model-B") is None      # different -> miss (re-issue)
+
+
+class TestErrorReport:
+    def test_buckets_classify_failures(self):
+        from btc_eval.soap_judge.cli import _buckets_from_status
+        records = [
+            {"id": "a", "judge_status": "parsed", "judge_parse": "strict", "empty_claims": False},
+            {"id": "b", "judge_status": "parsed", "judge_parse": "repaired", "empty_claims": False},
+            {"id": "c", "judge_status": "parse_failed", "judge_parse": "unparseable", "empty_claims": False},
+            {"id": "e", "judge_status": "llm_error", "judge_parse": "llm_error", "empty_claims": False},
+            {"id": "f", "judge_status": "parsed", "judge_parse": "strict", "empty_claims": True},
+        ]
+        errors, coverage = _buckets_from_status(records)
+        assert coverage == {"attempted": 5, "scored": 3, "failed": 2}
+        assert errors["judge_unparseable"]["ids"] == ["c"]
+        assert errors["judge_llm_error"]["ids"] == ["e"]
+        assert errors["judge_repaired"]["ids"] == ["b"]               # recovered, still scored
+        assert errors["extract_failed_empty_claims"]["ids"] == ["f"]  # faithfulness-inflated, still scored

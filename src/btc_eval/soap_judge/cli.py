@@ -112,8 +112,23 @@ def add_soap_judge_parser(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help="Directory for the resume cache (extract_raw/, judge_raw/). Defaults "
         "to the output dir. Point all shards at ONE shared dir so a completed "
-        "dialog is reused no matter which shard re-processes it (the cache is "
-        "keyed by dialog id, not shard).",
+        "dialog is reused no matter which shard re-processes it (the cache is keyed "
+        "by dialog id AND validated against --model, so a different model/precision "
+        "never reuses another run's cached judgments).",
+    )
+    parser.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="Delete the resume cache (extract_raw/ + judge_raw/) before running — "
+        "for a clean re-run with the SAME model. A different model is already "
+        "isolated automatically (the cache is model-keyed), so this is rarely needed.",
+    )
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="On resume, re-issue LLM calls whose cached response no longer parses "
+        "(e.g. after raising --judge-max-tokens to fix truncations) instead of "
+        "reusing the broken cached text.",
     )
     parser.set_defaults(func=cmd_soap_judge)
 
@@ -173,6 +188,75 @@ def _print_soap_summary(summary: dict, n_eval: int, n_fail: int) -> None:
     print("=" * 60)
 
 
+# --- Known-error reporting -------------------------------------------------
+# Every dialog gets a status record; these are consolidated (here and in
+# soap-aggregate) into a report of how often each known error affected a result
+# and exactly which dialogs — so a silent failure (parse drop, empty-claims
+# faithfulness inflation, LLM error) is always visible in the end result.
+
+def _status_records(claims: dict, judged: dict) -> list[dict]:
+    """One status record per judged dialog (written to soap_judge_status.jsonl)."""
+    records = []
+    for did in sorted(judged):
+        jr = judged[did]
+        er = claims.get(did, {})
+        records.append({
+            "id": did,
+            "judge_status": jr.get("status"),       # parsed / parse_failed / llm_error
+            "judge_parse": jr.get("parse_status"),  # strict / repaired / no_subscores / unparseable / empty / llm_error
+            "extract_status": er.get("status"),     # parsed / parse_failed / llm_error
+            "empty_claims": bool(jr.get("empty_claims")),
+        })
+    return records
+
+
+def _buckets_from_status(records: list[dict]) -> tuple[dict, dict]:
+    """Bucket per-dialog status into ``(errors, coverage)`` for the summary.
+
+    ``errors`` maps a known-error kind -> ``{"count", "ids"}``; ``coverage``
+    reports attempted / scored / failed. ``judge_repaired`` is informational (the
+    dialog IS scored, recovered via json-repair); ``extract_failed_empty_claims``
+    flags dialogs whose faithfulness is likely inflated (judged on empty claims).
+    """
+    from collections import defaultdict
+    buckets: dict[str, list[str]] = defaultdict(list)
+    scored = 0
+    for r in records:
+        did = r.get("id")
+        jstatus = r.get("judge_status")
+        jparse = r.get("judge_parse")
+        if jstatus == "parsed":
+            scored += 1
+            if jparse == "repaired":
+                buckets["judge_repaired"].append(did)
+        elif jstatus == "llm_error":
+            buckets["judge_llm_error"].append(did)
+        else:  # parse_failed
+            buckets[f"judge_{jparse or 'unparseable'}"].append(did)
+        if r.get("empty_claims"):
+            buckets["extract_failed_empty_claims"].append(did)
+    errors = {k: {"count": len(v), "ids": v} for k, v in sorted(buckets.items())}
+    coverage = {"attempted": len(records), "scored": scored,
+                "failed": len(records) - scored}
+    return errors, coverage
+
+
+def _print_error_report(errors: dict, coverage: dict) -> None:
+    """Print the known-error report (counts + a few affected ids)."""
+    if coverage:
+        print(f"\n  Coverage: {coverage.get('scored')}/{coverage.get('attempted')} "
+              f"scored, {coverage.get('failed')} failed")
+    if not errors:
+        return
+    print("  Known errors affecting results (kind: count [first ids]):")
+    for kind, info in errors.items():
+        ids = info.get("ids", [])
+        shown = ", ".join(map(str, ids[:5])) + ("…" if len(ids) > 5 else "")
+        flag = ("  ⚠ faithfulness likely inflated" if kind == "extract_failed_empty_claims"
+                else "  (recovered via repair)" if kind == "judge_repaired" else "")
+        print(f"    {kind:<28} {info.get('count'):>4}  [{shown}]{flag}")
+
+
 def cmd_soap_judge(args: argparse.Namespace) -> int:
     """Run the SOAP LLM-judge pipeline. Returns 0 on success, 1 on error."""
     from btc_eval.io import (
@@ -230,6 +314,12 @@ def cmd_soap_judge(args: argparse.Namespace) -> int:
     extract_raw = None if args.no_cache else cache_dir / "extract_raw"
     judge_raw = None if args.no_cache else cache_dir / "judge_raw"
     resume = not args.no_resume
+    if args.clear_cache:
+        import shutil
+        for d in (extract_raw, judge_raw):
+            if d and d.exists():
+                shutil.rmtree(d, ignore_errors=True)
+        print("Cleared resume cache (extract_raw/, judge_raw/)")
 
     print(
         f"Backend: {args.backend} | model: {args.model} | "
@@ -243,6 +333,7 @@ def cmd_soap_judge(args: argparse.Namespace) -> int:
         predictions, backend, args.model,
         workers=args.workers, max_tokens=args.max_tokens,
         raw_dir=extract_raw, prompt_dir=args.prompt_dir, resume=resume,
+        retry_failed=args.retry_failed,
     )
     # Surface stage-1 parse failures: a failed extraction silently degrades the
     # judge to an empty claim set (so faithfulness/hallucination look clean).
@@ -260,6 +351,7 @@ def cmd_soap_judge(args: argparse.Namespace) -> int:
         predictions, transcripts, claims, backend, args.model,
         workers=args.workers, max_tokens=(args.judge_max_tokens or args.max_tokens),
         raw_dir=judge_raw, prompt_dir=args.prompt_dir, resume=resume,
+        retry_failed=args.retry_failed,
     )
 
     per_dialog: list[dict] = []
@@ -283,6 +375,8 @@ def cmd_soap_judge(args: argparse.Namespace) -> int:
         per_dialog.append(row)
 
     agg = pipeline.aggregate_soap(scores_list)
+    status_records = _status_records(claims, judged)
+    errors, coverage = _buckets_from_status(status_records)
     extract_timing = _timing_stats(claims)
     judge_timing = _timing_stats(judged)
     wall_sec = time.perf_counter() - wall_start
@@ -292,6 +386,8 @@ def cmd_soap_judge(args: argparse.Namespace) -> int:
         **agg,
         "num_failures": len(failures),
         "extract_parse_failures": len(extract_failed),
+        "coverage": coverage,   # attempted / scored / failed
+        "errors": errors,       # per known-error kind: count + affected dialog ids
         "timing": {
             "wall_sec": wall_sec,
             "extract": extract_timing,
@@ -302,11 +398,15 @@ def cmd_soap_judge(args: argparse.Namespace) -> int:
     write_results_csv(per_dialog, out_dir / "soap_eval_summary.csv",
                       fieldnames=list(SOAP_CSV_COLUMNS))
     write_results_jsonl(per_dialog, out_dir / "soap_judge_per_dialog.jsonl")
+    # Per-dialog status for EVERY attempted dialog (incl. failures) — soap-aggregate
+    # reads these to build the consolidated end-result error report.
+    write_results_jsonl(status_records, out_dir / "soap_judge_status.jsonl")
     write_results_json(summary, out_dir / "summary.json")
     if failures:
         write_results_jsonl(failures, out_dir / "failures.jsonl")
 
     _print_soap_summary(summary, n_eval=len(per_dialog), n_fail=len(failures))
+    _print_error_report(errors, coverage)
     _print_timing(extract_timing, judge_timing, wall_sec)
     print(f"\nResults saved to {out_dir}/")
     return 0
@@ -391,12 +491,45 @@ def cmd_soap_aggregate(args: argparse.Namespace) -> int:
         return 1
 
     agg = aggregate_soap(scores)
+
+    # Consolidate per-shard status (a soap_judge_status.jsonl beside each input)
+    # into the END-result error report: how often each known error affected a
+    # result and exactly which dialogs. Without these files (older runs) we can
+    # only report the scored count.
+    status_by_id: dict[str, dict] = {}
+    for path in paths:
+        status_path = os.path.join(os.path.dirname(path), "soap_judge_status.jsonl")
+        if not os.path.exists(status_path):
+            continue
+        with open(status_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if "id" in rec:
+                    status_by_id[rec["id"]] = rec
+    if status_by_id:
+        errors, coverage = _buckets_from_status(list(status_by_id.values()))
+    else:
+        errors = {}
+        coverage = {"attempted": len(scores), "scored": len(scores), "failed": 0,
+                    "note": "no soap_judge_status.jsonl found; failures not visible"}
+
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
     write_results_jsonl(valid_rows, out_dir / "soap_judge_per_dialog.jsonl")
     write_results_csv(valid_rows, out_dir / "soap_eval_summary.csv",
                       fieldnames=list(SOAP_CSV_COLUMNS))
-    write_results_json({"num_dialogs": len(scores), **agg}, out_dir / "summary.json")
+    if status_by_id:
+        write_results_jsonl(list(status_by_id.values()), out_dir / "soap_judge_status.jsonl")
+    write_results_json(
+        {"num_dialogs": len(scores), **agg, "coverage": coverage, "errors": errors},
+        out_dir / "summary.json",
+    )
 
     note = f" ({skipped} rows skipped: missing score fields)" if skipped else ""
     print(f"Aggregated {len(paths)} files -> {len(scores)} unique dialogs{note}")
@@ -406,5 +539,6 @@ def cmd_soap_aggregate(args: argparse.Namespace) -> int:
         f"coverage {agg.get('mean_coverage', 0):.2f}, "
         f"conciseness {agg.get('mean_conciseness', 0):.2f}"
     )
+    _print_error_report(errors, coverage)
     print(f"Results saved to {out_dir}/")
     return 0
