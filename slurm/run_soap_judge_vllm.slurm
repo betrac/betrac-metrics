@@ -32,6 +32,7 @@
 #   VLLM_EXTRA_ARGS()    VLLM_READY_TIMEOUT(900)  WORKERS(24)  MAX_TOKENS(16000)
 #   OLLAMA_TIMEOUT(1800) STAGE_MODEL(1)  STAGE_DIR($TMPDIR/btc-vllm-...)
 #   PYTHON_MODULE()      APPTAINER_MODULE()
+#   VLLM_CACHE_DIR(persistent big-quota dir recommended; else node-local $TMPDIR)
 
 set -u
 
@@ -103,16 +104,27 @@ VLLM_ENVS="CC=gcc,CXX=g++"
 # Gemma-4 ships it as a separate chat_template.jinja (staged alongside the model).
 CHAT_TEMPLATE_ARG=""
 [ -f "${SERVE_PATH}/chat_template.jinja" ] && CHAT_TEMPLATE_ARG="--chat-template ${SERVE_PATH}/chat_template.jinja"
-# torch.compile / triton write a sizable cache; default goes to ~/.cache (HOME),
-# which is over quota here -> "Disk quota exceeded". Redirect ALL caches to a
-# big-quota location (scratch). HOME catches anything XDG-unaware.
-VLLM_CACHE_DIR="${VLLM_CACHE_DIR:-${HOME}/scratch/vllm/cache}"
+# torch.compile / triton / inductor write a sizable cache. vLLM's default lives
+# under $HOME/.cache, which is frequently OVER QUOTA on HPC homes ("Disk quota
+# exceeded"). Resolve a writable cache dir WITHOUT assuming any site-specific
+# scratch path (there is no portable ~/scratch):
+#   1) explicit VLLM_CACHE_DIR -> a PERSISTENT big-quota dir compiles ONCE and
+#      reuses across jobs (set it directly, or BTC_WORK in run_eval_judge.sh).
+#   2) else node-local $TMPDIR -> always writable, but vLLM recompiles each job.
+# Either way we redirect ALL cache roots there and point HOME at it too, to catch
+# XDG-unaware writers.
+if [ -z "${VLLM_CACHE_DIR:-}" ]; then
+    VLLM_CACHE_DIR="${TMPDIR:-/tmp}/btc-vllm-cache-${USER:-x}"
+    echo ">>> NOTE: VLLM_CACHE_DIR unset -> node-local ${VLLM_CACHE_DIR} (vLLM recompiles" >&2
+    echo ">>>       each job). Set VLLM_CACHE_DIR, or BTC_WORK in run_eval_judge.sh, to a" >&2
+    echo ">>>       persistent big-quota dir to compile once and reuse." >&2
+fi
 mkdir -p "${VLLM_CACHE_DIR}"
 VLLM_CACHE_REAL="$(readlink -f "${VLLM_CACHE_DIR}")"
 VLLM_ENVS="${VLLM_ENVS},HOME=${VLLM_CACHE_REAL},XDG_CACHE_HOME=${VLLM_CACHE_REAL}/.cache"
 VLLM_ENVS="${VLLM_ENVS},TRITON_CACHE_DIR=${VLLM_CACHE_REAL}/triton,TORCHINDUCTOR_CACHE_DIR=${VLLM_CACHE_REAL}/inductor"
 VLLM_ENVS="${VLLM_ENVS},VLLM_CACHE_ROOT=${VLLM_CACHE_REAL}/vllm,HF_HOME=${VLLM_CACHE_REAL}/hf"
-# --nv exposes the GPU; bind the stage dir + the scratch cache so the container can read/write them.
+# --nv exposes the GPU; bind the stage dir + the cache dir so the container can read/write them.
 apptainer exec --nv --cleanenv --env "${VLLM_ENVS}" \
     --bind "${VLLM_CACHE_REAL}" ${SERVE_PATH:+--bind "${SERVE_PATH}"} "${VLLM_SIF}" \
     vllm serve "${SERVE_PATH}" \
