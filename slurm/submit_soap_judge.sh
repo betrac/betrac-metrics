@@ -64,6 +64,9 @@ SBATCH_FLAGS=()
 [ -n "${CLUSTER:-}" ]    && SBATCH_FLAGS+=(--cluster="${CLUSTER}")
 [ -n "${ACCOUNT:-}" ]    && SBATCH_FLAGS+=(--account="${ACCOUNT}")
 [ -n "${PARTITION:-}" ]  && SBATCH_FLAGS+=(--partition="${PARTITION}")
+# Pin node features, e.g. an H100 tag when a partition MIXES GPU types and FP8
+# must land on Hopper. Find your site's tag with: sinfo -p <part> -N -o '%N %G %f'.
+[ -n "${CONSTRAINT:-}" ] && SBATCH_FLAGS+=(--constraint="${CONSTRAINT}")
 [ -n "${JUDGE_TIME:-}" ] && SBATCH_FLAGS+=(--time="${JUDGE_TIME}")
 [ -n "${GPUS:-}" ]       && SBATCH_FLAGS+=(--gpus-per-task="${GPUS}")
 [ -n "${JOB_MEM:-}" ]    && SBATCH_FLAGS+=(--mem="${JOB_MEM}")

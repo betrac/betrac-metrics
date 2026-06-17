@@ -75,6 +75,26 @@ if command -v module >/dev/null 2>&1; then
 fi
 command -v apptainer >/dev/null 2>&1 || { echo "ERROR: apptainer not on PATH" >&2; exit 1; }
 
+# --- FP8 preflight: confirm we landed on an FP8-capable GPU ----------------
+# FP8 weights need Hopper/Blackwell. On a partition that MIXES GPU types a job can
+# land on an older card and vLLM dies mid-load with a cryptic "fp8e4nv not
+# supported". Catch the known FP8-less datacenter cards here and fail fast with the
+# fix (pin H100 via CONSTRAINT) BEFORE staging the model. Any other GPU proceeds and
+# lets vLLM be the final arbiter.
+case "${VLLM_EXTRA_ARGS:-}" in
+    *quantization*fp8*)
+        GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)"
+        case "${GPU_NAME}" in
+            *A100*|*A40*|*A30*|*A10*|*V100*|*T4*|*P100*|*P40*)
+                echo "ERROR: FP8 weights need a Hopper/Blackwell GPU, but this node has '${GPU_NAME}'." >&2
+                echo "       The partition likely mixes GPU types. Pin H100 nodes by setting" >&2
+                echo "       CONSTRAINT=<your-h100-feature> (find it: sinfo -p <part> -N -o '%N %G %f')." >&2
+                exit 1 ;;
+            "") echo ">>> NOTE: no nvidia-smi to read the GPU name; letting vLLM validate FP8 support." >&2 ;;
+            *)  echo ">>> FP8 preflight OK on '${GPU_NAME}'." ;;
+        esac ;;
+esac
+
 # --- Stage the HF model dir to NODE-LOCAL disk (avoid shared-NFS reads) -----
 SERVE_PATH="${VLLM_MODEL_DIR}"
 if [ "${STAGE_MODEL}" = "1" ]; then
