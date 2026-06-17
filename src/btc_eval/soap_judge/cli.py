@@ -180,6 +180,9 @@ def _print_soap_summary(summary: dict, n_eval: int, n_fail: int) -> None:
             mean = summary.get(f"mean_{field}", 0.0)
             std = summary.get(f"std_{field}", 0.0)
             print(f"    {field:<14} {mean:5.2f} ± {std:.2f}")
+        if summary.get("n_excluded_empty_claims"):
+            print(f"    (faithfulness/hallucination over {summary['n_faithfulness']}/{n_eval}; "
+                  f"{summary['n_excluded_empty_claims']} excluded — extraction failed)")
         print("\n  Error rates / counts (mean):")
         print(f"    hallucination_rate   {summary.get('mean_hallucination_rate', 0.0):.3f}")
         print(f"    contradiction_rate   {summary.get('mean_contradiction_rate', 0.0):.3f}")
@@ -356,6 +359,7 @@ def cmd_soap_judge(args: argparse.Namespace) -> int:
 
     per_dialog: list[dict] = []
     scores_list = []
+    empty_claims_list: list[bool] = []
     failures: list[dict] = []
     for dialog_id in sorted(judged):
         result = judged[dialog_id]
@@ -370,11 +374,13 @@ def cmd_soap_judge(args: argparse.Namespace) -> int:
             continue
         scores = judgment_to_scores(judgment)
         scores_list.append(scores)
+        empty_claims_list.append(bool(result.get("empty_claims")))
         row = scores.to_dict()
         row["id"] = dialog_id
         per_dialog.append(row)
 
-    agg = pipeline.aggregate_soap(scores_list)
+    # Exclude empty-claims dialogs (extraction failed) from faithfulness/hallucination.
+    agg = pipeline.aggregate_soap(scores_list, empty_claims_list)
     status_records = _status_records(claims, judged)
     errors, coverage = _buckets_from_status(status_records)
     extract_timing = _timing_stats(claims)
@@ -490,12 +496,11 @@ def cmd_soap_aggregate(args: argparse.Namespace) -> int:
         print("Error: no per-dialog rows with score fields found", file=sys.stderr)
         return 1
 
-    agg = aggregate_soap(scores)
-
-    # Consolidate per-shard status (a soap_judge_status.jsonl beside each input)
-    # into the END-result error report: how often each known error affected a
-    # result and exactly which dialogs. Without these files (older runs) we can
-    # only report the scored count.
+    # Consolidate per-shard status (a soap_judge_status.jsonl beside each input):
+    # the END-result error report (how often each known error hit a result + which
+    # dialogs) AND the empty_claims flag used to exclude extraction-failed dialogs
+    # from faithfulness/hallucination. Without these files (older runs) we report
+    # only the scored count and apply no exclusion.
     status_by_id: dict[str, dict] = {}
     for path in paths:
         status_path = os.path.join(os.path.dirname(path), "soap_judge_status.jsonl")
@@ -512,6 +517,10 @@ def cmd_soap_aggregate(args: argparse.Namespace) -> int:
                     continue
                 if "id" in rec:
                     status_by_id[rec["id"]] = rec
+
+    empty_claims = [bool(status_by_id.get(r["id"], {}).get("empty_claims")) for r in valid_rows]
+    agg = aggregate_soap(scores, empty_claims)
+
     if status_by_id:
         errors, coverage = _buckets_from_status(list(status_by_id.values()))
     else:
@@ -539,6 +548,9 @@ def cmd_soap_aggregate(args: argparse.Namespace) -> int:
         f"coverage {agg.get('mean_coverage', 0):.2f}, "
         f"conciseness {agg.get('mean_conciseness', 0):.2f}"
     )
+    if agg.get("n_excluded_empty_claims"):
+        print(f"  (faithfulness/hallucination over {agg['n_faithfulness']}/{len(scores)}; "
+              f"{agg['n_excluded_empty_claims']} excluded — extraction failed)")
     _print_error_report(errors, coverage)
     print(f"Results saved to {out_dir}/")
     return 0

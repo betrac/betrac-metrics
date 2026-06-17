@@ -398,3 +398,34 @@ class TestErrorReport:
         assert errors["judge_llm_error"]["ids"] == ["e"]
         assert errors["judge_repaired"]["ids"] == ["b"]               # recovered, still scored
         assert errors["extract_failed_empty_claims"]["ids"] == ["f"]  # faithfulness-inflated, still scored
+
+
+class TestEmptyClaimsExclusion:
+    @staticmethod
+    def _score(faith, hall):
+        from btc_eval.types import SoapScores
+        return SoapScores(
+            faithfulness=faith, structure=3, coverage=3, conciseness=3,
+            over_medicalization=0, under_medicalization=0, over_specific=0,
+            hallucination_rate=hall, contradiction_rate=0.0,
+            missed_claims=0, critical_omissions=0, redundancy_count=0,
+        )
+
+    def test_faithfulness_and_hallucination_exclude_empty_claims(self):
+        from btc_eval.soap_judge.pipeline import aggregate_soap
+        # two real dialogs + one extract-failed dialog with INFLATED faithfulness (5) / clean hall (0)
+        scores = [self._score(2, 0.5), self._score(2, 0.5), self._score(5, 0.0)]
+        agg = aggregate_soap(scores, [False, False, True])
+        assert agg["num_dialogs"] == 3                       # structure/coverage/concise use all 3
+        assert agg["mean_structure"] == 3.0
+        assert agg["mean_faithfulness"] == 2.0               # NOT (2+2+5)/3 = 3.0
+        assert agg["mean_hallucination_rate"] == 0.5         # NOT (0.5+0.5+0)/3
+        assert agg["n_faithfulness"] == 2
+        assert agg["n_excluded_empty_claims"] == 1
+
+    def test_no_exclusion_is_backward_compatible(self):
+        from btc_eval.soap_judge.pipeline import aggregate_soap
+        scores = [self._score(2, 0.5), self._score(2, 0.5), self._score(5, 0.0)]
+        agg = aggregate_soap(scores)                          # no empty_claims arg
+        assert agg["mean_faithfulness"] == 3.0                # all 3 counted
+        assert "n_excluded_empty_claims" not in agg

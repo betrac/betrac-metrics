@@ -330,18 +330,41 @@ def run_judge(
     return _run_stage(payload_items, _work, workers, "judge")
 
 
-def aggregate_soap(scores: list[SoapScores]) -> dict:
-    """Reduce per-dialog scores to means (subscores also get a population std)."""
+def aggregate_soap(scores: list[SoapScores], empty_claims: list[bool] | None = None) -> dict:
+    """Reduce per-dialog scores to means (subscores also get a population std).
+
+    ``empty_claims[i] = True`` marks a dialog whose stage-1 extraction failed, so
+    it was judged on an EMPTY claim set. Faithfulness and ``hallucination_rate``
+    are meaningless there (no claims to check -> the note looks maximally
+    faithful), so those two metrics are computed **only over dialogs with a real
+    claim set**; the claim-independent subscores (structure / coverage /
+    conciseness) and the other counts are unaffected and use all dialogs. This
+    restores the source pipeline's "a failed extraction is excluded, not scored"
+    behavior, applied surgically to just the affected metrics. When some dialogs
+    are excluded, ``n_faithfulness`` / ``n_excluded_empty_claims`` are reported.
+    """
     n = len(scores)
     if n == 0:
         return {"num_dialogs": 0}
+    if empty_claims is None or len(empty_claims) != n:
+        empty_claims = [False] * n
+    faith_idx = [i for i in range(n) if not empty_claims[i]]   # trustworthy faithfulness
+    all_idx = list(range(n))
+
+    def _mean(field: str, idx: list[int]) -> float:
+        vals = [getattr(scores[i], field) for i in idx]
+        return (sum(vals) / len(vals)) if vals else 0.0
+
+    def _std(field: str, idx: list[int], mean: float) -> float:
+        vals = [getattr(scores[i], field) for i in idx]
+        return (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5 if vals else 0.0
 
     agg: dict = {"num_dialogs": n}
     for field in SOAP_SUBSCORES:
-        values = [getattr(s, field) for s in scores]
-        mean = sum(values) / n
+        idx = faith_idx if field == "faithfulness" else all_idx
+        mean = _mean(field, idx)
         agg[f"mean_{field}"] = mean
-        agg[f"std_{field}"] = (sum((v - mean) ** 2 for v in values) / n) ** 0.5
+        agg[f"std_{field}"] = _std(field, idx, mean)
 
     count_fields = (
         "over_medicalization",
@@ -354,6 +377,11 @@ def aggregate_soap(scores: list[SoapScores]) -> dict:
         "redundancy_count",
     )
     for field in count_fields:
-        values = [getattr(s, field) for s in scores]
-        agg[f"mean_{field}"] = sum(values) / n
+        idx = faith_idx if field == "hallucination_rate" else all_idx
+        agg[f"mean_{field}"] = _mean(field, idx)
+
+    if len(faith_idx) != n:
+        agg["n_faithfulness"] = len(faith_idx)
+        agg["n_hallucination_rate"] = len(faith_idx)
+        agg["n_excluded_empty_claims"] = n - len(faith_idx)
     return agg
