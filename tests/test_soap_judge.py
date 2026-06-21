@@ -77,6 +77,124 @@ class TestSafeCoerce:
 
 
 class TestJudgmentToScores:
+    def test_recomputes_inconsistent_claim_counts(self):
+        judgment = {
+            "subscores_1_to_5": {
+                "faithfulness_grounding": 1,
+                "structure_formatting": 3,
+                "coverage_completeness": 1,
+                "conciseness": 2,
+            },
+            # Deliberately incorrect model-generated summary.
+            "metrics": {
+                "claim_counts": {
+                    "total": 4,
+                    "supported": 1,
+                    "contradicted": 1,
+                    "not_in_transcript": 2,
+                    "partial": 0,
+                    "who_said_mismatch": 0,
+                },
+                "rates": {
+                    "unsupported_rate": 0.5,
+                    "contradiction_rate": 0.25,
+                    "evidence_coverage_rate": 0.25,
+                    "who_said_mismatch_rate": 0.0,
+                },
+                "coverage": {
+                    "checklist_total": 999,
+                    "checklist_yes": 999,
+                    "coverage_rate": 1.0,
+                    "critical_omissions_count": 999,
+                },
+                "conciseness": {
+                    "redundancy_count": 0,
+                    "low_value_supported_count": 0,
+                },
+            },
+            "claim_judgments": [
+                {
+                    "claim_id": "C001",
+                    "label": "Supported",
+                    "who_said_mismatch": False,
+                    "error_types": [],
+                },
+                {
+                    "claim_id": "C002",
+                    "label": "Supported",
+                    "who_said_mismatch": True,
+                    "error_types": [],
+                },
+                {
+                    "claim_id": "C003",
+                    "label": "Contradicted",
+                    "who_said_mismatch": False,
+                    "error_types": ["contradiction"],
+                },
+                {
+                    "claim_id": "C004",
+                    "label": "Partial",
+                    "who_said_mismatch": False,
+                    "error_types": [],
+                },
+                {
+                    "claim_id": "C005",
+                    "label": "Not-in-transcript",
+                    "who_said_mismatch": False,
+                    "error_types": ["missing_support"],
+                },
+            ],
+            "coverage_checklist": [
+                {
+                    "item_id": "K01",
+                    "documented_in_note": True,
+                    "omission_severity": "na",
+                },
+                {
+                    "item_id": "K02",
+                    "documented_in_note": False,
+                    "omission_severity": "critical",
+                },
+                {
+                    "item_id": "K03",
+                    "documented_in_note": False,
+                    "omission_severity": "minor",
+                },
+            ],
+        }
+    
+        scores = judgment_to_scores(judgment)
+    
+        counts = judgment["metrics"]["claim_counts"]
+        rates = judgment["metrics"]["rates"]
+        coverage = judgment["metrics"]["coverage"]
+    
+        assert counts == {
+            "total": 5,
+            "supported": 2,
+            "contradicted": 1,
+            "not_in_transcript": 1,
+            "partial": 1,
+            "who_said_mismatch": 1,
+        }
+    
+        assert rates["unsupported_rate"] == pytest.approx(1 / 5)
+        assert rates["contradiction_rate"] == pytest.approx(1 / 5)
+        assert rates["evidence_coverage_rate"] == pytest.approx(2 / 5)
+        assert rates["who_said_mismatch_rate"] == pytest.approx(1 / 5)
+    
+        assert coverage == {
+            "checklist_total": 3,
+            "checklist_yes": 1,
+            "coverage_rate": pytest.approx(1 / 3),
+            "critical_omissions_count": 1,
+        }
+    
+        assert scores.hallucination_rate == pytest.approx(1 / 5)
+        assert scores.contradiction_rate == pytest.approx(1 / 5)
+        assert scores.missed_claims == 1
+        assert scores.critical_omissions == 1
+    
     def test_pipe_joined_error_types_are_tallied(self):
         judgment = {
             "subscores_1_to_5": {
