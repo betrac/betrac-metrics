@@ -100,6 +100,135 @@ def parse_claims(raw_text: str) -> dict | None:
     return extract_json_with_status(raw_text)[0]
 
 
+_LABEL_TO_COUNT_KEY = {
+    "supported": "supported",
+    "contradicted": "contradicted",
+    "not-in-transcript": "not_in_transcript",
+    "partial": "partial",
+}
+
+
+def _normalize_claim_label(value: Any) -> str:
+    """Normalize minor formatting differences in claim labels."""
+    label = str(value or "").strip().lower()
+    label = re.sub(r"[\s_]+", "-", label)
+    return label
+
+
+def _is_true(value: Any) -> bool:
+    """Accept JSON true and the string 'true'."""
+    return value is True or str(value).strip().lower() == "true"
+
+
+def recompute_judgment_metrics(judgment: dict) -> dict:
+    """Recompute deterministic counts from the detailed judgment lists.
+
+    The LLM may produce correct per-claim labels but inconsistent summary
+    counts. The detailed lists are treated as the source of truth.
+    """
+    metrics = judgment.get("metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+        judgment["metrics"] = metrics
+
+    # ---------------------------------------------------------------
+    # Recompute claim_counts and rates from claim_judgments.
+    # ---------------------------------------------------------------
+    claim_judgments = judgment.get("claim_judgments")
+
+    if isinstance(claim_judgments, list):
+        valid_claims = [
+            claim for claim in claim_judgments
+            if isinstance(claim, dict)
+        ]
+
+        normalized_labels = [
+            _normalize_claim_label(claim.get("label"))
+            for claim in valid_claims
+        ]
+
+        # Only overwrite the model's summary when every item has one of
+        # the four labels allowed by the output schema.
+        labels_are_valid = (
+            len(valid_claims) == len(claim_judgments)
+            and all(label in _LABEL_TO_COUNT_KEY for label in normalized_labels)
+        )
+
+        if labels_are_valid:
+            counts = {
+                "total": len(valid_claims),
+                "supported": 0,
+                "contradicted": 0,
+                "not_in_transcript": 0,
+                "partial": 0,
+                "who_said_mismatch": 0,
+            }
+
+            for claim, label in zip(valid_claims, normalized_labels):
+                count_key = _LABEL_TO_COUNT_KEY[label]
+                counts[count_key] += 1
+
+                if _is_true(claim.get("who_said_mismatch")):
+                    counts["who_said_mismatch"] += 1
+
+            total = counts["total"]
+
+            metrics["claim_counts"] = counts
+            metrics["rates"] = {
+                "unsupported_rate": (
+                    counts["not_in_transcript"] / total if total else 0.0
+                ),
+                "contradiction_rate": (
+                    counts["contradicted"] / total if total else 0.0
+                ),
+                "evidence_coverage_rate": (
+                    counts["supported"] / total if total else 0.0
+                ),
+                "who_said_mismatch_rate": (
+                    counts["who_said_mismatch"] / total if total else 0.0
+                ),
+            }
+
+    # ---------------------------------------------------------------
+    # Recompute coverage counts from coverage_checklist.
+    # ---------------------------------------------------------------
+    checklist = judgment.get("coverage_checklist")
+
+    if (
+        isinstance(checklist, list)
+        and all(isinstance(item, dict) for item in checklist)
+    ):
+        checklist_total = len(checklist)
+        checklist_yes = sum(
+            _is_true(item.get("documented_in_note"))
+            for item in checklist
+        )
+        critical_omissions = sum(
+            not _is_true(item.get("documented_in_note"))
+            and str(item.get("omission_severity", "")).strip().lower()
+            == "critical"
+            for item in checklist
+        )
+
+        coverage = metrics.get("coverage")
+        if not isinstance(coverage, dict):
+            coverage = {}
+            metrics["coverage"] = coverage
+
+        coverage.update({
+            "checklist_total": checklist_total,
+            "checklist_yes": checklist_yes,
+            "coverage_rate": (
+                checklist_yes / checklist_total
+                if checklist_total
+                else 0.0
+            ),
+            "critical_omissions_count": critical_omissions,
+        })
+
+    return judgment
+
+
 def parse_judgment_with_status(raw_text: str) -> tuple[dict | None, str]:
     """Parse a stage-2 judging response, reporting how it parsed.
 
@@ -113,6 +242,7 @@ def parse_judgment_with_status(raw_text: str) -> tuple[dict | None, str]:
         return None, status
     if "subscores_1_to_5" not in obj:
         return None, "no_subscores"
+    recompute_judgment_metrics(obj)
     return obj, status
 
 
@@ -169,6 +299,7 @@ def _tally_error_types(judgment: dict) -> dict[str, int]:
 
 def judgment_to_scores(judgment: dict) -> SoapScores:
     """Flatten a judgment JSON object into the per-dialog :class:`SoapScores`."""
+    recompute_judgment_metrics(judgment)
     subs = judgment.get("subscores_1_to_5", {}) or {}
     metrics = judgment.get("metrics", {}) or {}
     rates = metrics.get("rates", {}) or {}
