@@ -70,7 +70,10 @@ class OllamaBackend:
             "top_p": top_p,
             "max_tokens": max_tokens,
         }
-
+        # thinking mode off
+        reasoning_effort = os.environ.get("OLLAMA_REASONING_EFFORT")
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
         def _post() -> dict:
             resp = self._requests.post(
                 self.url,
