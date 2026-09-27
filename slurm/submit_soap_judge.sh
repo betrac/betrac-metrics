@@ -14,7 +14,7 @@
 #
 #   BTC_VENV=/path/.venv PREDICTIONS=preds.jsonl TRANSCRIPTS=transcripts.jsonl \
 #   JUDGE_MODEL=gemma4:31b OUTPUT_DIR=out/run1 \
-#   CLUSTER=ascend ACCOUNT=PAS2138 OLLAMA_SIF=$HOME/.../ollama.sif \
+#   CLUSTER=yourcluster ACCOUNT=YOURACCOUNT OLLAMA_SIF=$HOME/.../ollama.sif \
 #   SAMPLES_PER_SHARD=4 MAX_CONCURRENT=24 \
 #   bash slurm/submit_soap_judge.sh
 #

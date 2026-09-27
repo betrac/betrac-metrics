@@ -1,6 +1,6 @@
 [project]
 name = "btc-eval"
-version = "0.1.0"
+version = "0.2.0"
 description = "BeTraC 2026 evaluation harness — Open Medical Concept F1 and ROUGE scoring for clinical SOAP note summaries"
 readme = "README.md"
 requires-python = ">=3.10"

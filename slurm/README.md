@@ -6,10 +6,10 @@ Nothing here hardcodes a cluster, account, or model — all cluster-specific val
 arrive as environment variables, so the same files run on OSC Ascend, a generic
 university `--partition=gpu` cluster, or a cloud SLURM.
 
-> For the BeTraC 2026 organizer eval set, **don't call these directly** — use the
-> wrapper in [`eval2026/judge/run_eval_judge.sh`](../../betrac-private/eval2026/judge/run_eval_judge.sh),
-> which fills in the OSC Ascend + `gemma4:31b` values and runs all three
-> sub-datasets. These templates are the engine it drives.
+> The official BeTraC 2026 eval-set judging is run by the organizers through an
+> internal wrapper that fills in their cluster values and runs all three
+> sub-datasets; these templates are the engine it drives. Teams reproducing the
+> judge on their own data call the templates directly, as shown below.
 
 ## Files
 
@@ -111,7 +111,7 @@ bash slurm/submit_soap_judge.sh
 BTC_VENV=$PWD/.venv \
 PREDICTIONS=preds.jsonl TRANSCRIPTS=transcripts.jsonl \
 JUDGE_MODEL=gemma4:31b OUTPUT_DIR=out/run1 \
-CLUSTER=ascend ACCOUNT=PAS2138 \
+CLUSTER=yourcluster ACCOUNT=YOURACCOUNT \
 OLLAMA_MODULE=ollama/0.13.1 OLLAMA_MODELS=$HOME/.ollama/models \
 PREPULL=1 SAMPLES_PER_SHARD=4 \
 bash slurm/submit_soap_judge.sh
